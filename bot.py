@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = "8676951864:AAFre_ZY7CI85TKvfoI3yxqRWowoj5daO0s"
-ADMIN_ID = 174415647
+ADMIN_ID = 1208378923  # ← ЗАМЕНИТЕ НА ВАШ TELEGRAM ID
 
 SUPPORT_USERNAME = "@Scronexcyyy"
 
@@ -24,7 +24,7 @@ RATES = {"rub": 1.0, "usd": 90.0, "ton": 550.0}
 
 # Состояния
 (
-    WAIT_STARS_COUNT, WAIT_TARGET_USERNAME, WAIT_CURRENCY,
+    WAIT_STARS_COUNT, WAIT_BUY_TYPE, WAIT_TARGET_USERNAME, WAIT_CURRENCY,
     WAIT_DEPOSIT_AMOUNT,
     WAIT_WITHDRAW_AMOUNT, WAIT_WITHDRAW_DETAILS,
     WAIT_ADMIN_BROADCAST,
@@ -32,7 +32,7 @@ RATES = {"rub": 1.0, "usd": 90.0, "ton": 550.0}
     WAIT_ADMIN_EDIT_PRICE,
     WAIT_ADMIN_BALANCE_USER, WAIT_ADMIN_BALANCE_AMOUNT,
     WAIT_ADMIN_MSG_USER_ID, WAIT_ADMIN_MSG_TEXT,
-) = range(13)
+) = range(14)
 
 # Хранилище
 user_balances = {}
@@ -176,15 +176,88 @@ async def buy_stars_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Минимум — 50 звёзд. Введите снова:")
             return WAIT_STARS_COUNT
         context.user_data["stars_count"] = count
+        rub = count * STARS_PRICE_RUB
+        # Показываем кнопки: купить себе / купить анонимно
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🙋 Купить себе", callback_data="buy_type_self"),
+                InlineKeyboardButton("🥷 Купить анонимно", callback_data="buy_type_anon"),
+            ],
+            [InlineKeyboardButton("◀️ Назад", callback_data="buy_stars")],
+        ])
         await update.message.reply_text(
-            "👤 Введите *@юзернейм* получателя звёзд:\n_(например: @username)_",
+            f"⭐ *Звёзд: {count}*\n"
+            f"💰 Стоимость: *{rub:.2f}₽*\n\n"
+            f"Выберите тип покупки:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="buy_stars")]]),
+            reply_markup=kb
         )
-        return WAIT_TARGET_USERNAME
+        return WAIT_BUY_TYPE
     except ValueError:
         await update.message.reply_text("❌ Введите корректное число:")
         return WAIT_STARS_COUNT
+
+
+async def buy_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    buy_type = query.data.split("_")[2]  # "self" or "anon"
+    context.user_data["buy_type"] = buy_type
+
+    if buy_type == "self":
+        # Автоматически ставим собственный юзернейм
+        user = query.from_user
+        if user.username:
+            username = f"@{user.username}"
+        else:
+            username = f"ID:{user.id}"
+        context.user_data["target_username"] = username
+        stars = context.user_data["stars_count"]
+        rub = stars * STARS_PRICE_RUB
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🇷🇺 Рубли (₽)", callback_data="currency_rub")],
+            [InlineKeyboardButton("💵 Доллары ($)", callback_data="currency_usd")],
+            [InlineKeyboardButton("💎 TON", callback_data="currency_ton")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="buy_stars")],
+        ])
+        uid = query.from_user.id
+        cid = query.message.chat_id
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        last_menu_msg.pop(uid, None)
+        await send_menu_msg(
+            cid, uid,
+            f"💳 *Выберите валюту оплаты:*\n\n"
+            f"⭐ Звёзды: *{stars}*\n"
+            f"🙋 Получатель: *{username}* (вы)\n\n"
+            f"Стоимость:\n"
+            f"• ₽ Рубли: *{rub:.2f}₽*\n"
+            f"• $ Доллары: *{rub / RATES['usd']:.2f}$*\n"
+            f"• 💎 TON: *{rub / RATES['ton']:.4f} TON*",
+            kb, context, photo=banner_file_id
+        )
+        return WAIT_CURRENCY
+    else:
+        # Анонимная покупка — спрашиваем юзернейм
+        uid = query.from_user.id
+        cid = query.message.chat_id
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        last_menu_msg.pop(uid, None)
+        msg = await context.bot.send_message(
+            chat_id=cid,
+            text="🥷 *Анонимная покупка*\n\n"
+                 "Введите *@юзернейм* получателя звёзд:\n"
+                 "_(получатель не узнает, кто купил)_",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="buy_stars")]]),
+        )
+        last_menu_msg[uid] = msg.message_id
+        return WAIT_TARGET_USERNAME
 
 
 async def buy_stars_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -193,7 +266,9 @@ async def buy_stars_username(update: Update, context: ContextTypes.DEFAULT_TYPE)
         username = "@" + username
     context.user_data["target_username"] = username
     stars = context.user_data["stars_count"]
+    buy_type = context.user_data.get("buy_type", "anon")
     rub = stars * STARS_PRICE_RUB
+    label = "🥷 Получатель (анонимно)" if buy_type == "anon" else "👤 Получатель"
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🇷🇺 Рубли (₽)", callback_data="currency_rub")],
         [InlineKeyboardButton("💵 Доллары ($)", callback_data="currency_usd")],
@@ -203,7 +278,7 @@ async def buy_stars_username(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         f"💳 *Выберите валюту оплаты:*\n\n"
         f"⭐ Звёзды: *{stars}*\n"
-        f"👤 Получатель: *{username}*\n\n"
+        f"{label}: *{username}*\n\n"
         f"Стоимость:\n"
         f"• ₽ Рубли: *{rub:.2f}₽*\n"
         f"• $ Доллары: *{rub / RATES['usd']:.2f}$*\n"
@@ -265,13 +340,16 @@ async def paid_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = context.user_data.get("target_username", "?")
     currency = context.user_data.get("currency", "?")
     amount = context.user_data.get("amount", 0)
+    buy_type = context.user_data.get("buy_type", "anon")
     syms = {"rub": "₽", "usd": "$", "ton": " TON"}
     sym = syms.get(currency, "")
+    type_label = "🙋 Себе" if buy_type == "self" else "🥷 Анонимно"
     order_id = f"{user.id}_{stars}_{int(float(amount) * 100)}"
     pending_payments[order_id] = {
         "user_id": user.id, "user_name": user.full_name,
         "username_tg": f"@{user.username}" if user.username else f"ID:{user.id}",
         "stars": stars, "target": username, "currency": currency, "amount": amount, "symbol": sym,
+        "buy_type": buy_type,
     }
     admin_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Оплата пришла", callback_data=f"confirm_payment_{order_id}")],
@@ -282,6 +360,7 @@ async def paid_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔔 *Новая оплата за звёзды!*\n\n"
         f"👤 {user.full_name} ({f'@{user.username}' if user.username else f'ID:{user.id}'})\n"
         f"⭐ Звёзд: *{stars}*\n📨 Получатель: *{username}*\n"
+        f"🏷 Тип: *{type_label}*\n"
         f"💰 Сумма: *{amount}{sym}*\n💳 Валюта: *{currency.upper()}*",
         parse_mode="Markdown", reply_markup=admin_kb
     )
@@ -1056,13 +1135,150 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== MAIN ====================
 
+async def setup_commands(application):
+    from telegram import BotCommand
+    await application.bot.set_my_commands([
+        BotCommand("start",    "🏠 Главное меню"),
+        BotCommand("buy",      "⭐ Купить звёзды"),
+        BotCommand("balance",  "💰 Мой баланс"),
+        BotCommand("deposit",  "💳 Пополнить баланс"),
+        BotCommand("withdraw", "💸 Вывести средства"),
+        BotCommand("referral", "👥 Реферальная программа"),
+        BotCommand("info",     "ℹ️ Информация о сервисе"),
+        BotCommand("support",  "🆘 Поддержка"),
+        BotCommand("admin",    "🔧 Панель администратора"),
+    ])
+
+
+# ==================== КОМАНДЫ ИЗ МЕНЮ ====================
+
+async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    all_users.add(user.id)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]])
+    await send_menu_msg(
+        update.effective_chat.id, user.id,
+        "⭐ *Покупка звёзд*\n\nВведите количество звёзд:\n_(минимум 50 звёзд)_",
+        kb, context, photo=banner_file_id
+    )
+    context.user_data["_buy_from_cmd"] = True
+
+
+async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    all_users.add(user.id)
+    balance = get_balance(user.id)
+    is_admin = (user.id == ADMIN_ID)
+    kb = main_menu_keyboard(is_admin)
+    await send_menu_msg(
+        update.effective_chat.id, user.id,
+        f"💰 *Ваш баланс*\n\n"
+        f"Доступно: *{balance:.2f}₽*\n\n"
+        f"Для пополнения нажмите «Пополнение».\nДля вывода нажмите «Вывод».",
+        kb, context, photo=banner_file_id
+    )
+
+
+async def referral_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    all_users.add(user.id)
+    bot_username = (await context.bot.get_me()).username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user.id}"
+    ref_count = sum(1 for v in user_referrals.values() if v == user.id)
+    earned = referral_earnings.get(user.id, 0)
+    await send_menu_msg(
+        update.effective_chat.id, user.id,
+        f"👥 *Реферальная система*\n\n"
+        f"🔗 Ваша ссылка:\n`{ref_link}`\n\n"
+        f"• Приглашено: *{ref_count}*\n"
+        f"• Заработано: *{earned:.2f}₽*\n"
+        f"• Баланс: *{get_balance(user.id):.2f}₽*",
+        InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]]),
+        context, photo=banner_file_id
+    )
+
+
+async def deposit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    all_users.add(user.id)
+    balance = get_balance(user.id)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🇷🇺 Рублями (₽)", callback_data="deposit_rub")],
+        [InlineKeyboardButton("💵 Долларами ($)", callback_data="deposit_usd")],
+        [InlineKeyboardButton("💎 TON", callback_data="deposit_ton")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")],
+    ])
+    await send_menu_msg(
+        update.effective_chat.id, user.id,
+        f"💰 *Пополнение баланса*\n\nБаланс: *{balance:.2f}₽*\n\n"
+        f"💳 Карта:\n`{CARD_NUMBER}`\nТел: `{CARD_PHONE}`\n\n"
+        f"💎 TON/USDT:\n`{CRYPTO_ADDRESS}`\n\nВыберите валюту:",
+        kb, context, photo=banner_file_id
+    )
+
+
+async def withdraw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    all_users.add(user.id)
+    balance = get_balance(user.id)
+    if balance < 100:
+        await update.message.reply_text(
+            f"❌ Недостаточно средств!\nБаланс: *{balance:.2f}₽*\nМинимум: 100₽",
+            parse_mode="Markdown"
+        )
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🇷🇺 Рублями (₽)", callback_data="withdraw_rub")],
+        [InlineKeyboardButton("💵 Долларами ($)", callback_data="withdraw_usd")],
+        [InlineKeyboardButton("💎 TON", callback_data="withdraw_ton")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")],
+    ])
+    await send_menu_msg(
+        update.effective_chat.id, user.id,
+        f"💸 *Вывод средств*\n\nБаланс: *{balance:.2f}₽*\n\nВыберите валюту:",
+        kb, context, photo=banner_file_id
+    )
+
+
+async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    all_users.add(user.id)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🆘 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME.lstrip('@')}")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")],
+    ])
+    await send_menu_msg(
+        update.effective_chat.id, user.id,
+        f"ℹ️ *Stars Bulling — информация*\n\n"
+        f"⭐ Курс: *1 звезда = {STARS_PRICE_RUB}₽*\n"
+        f"📞 Поддержка: {SUPPORT_USERNAME}\n\n"
+        f"Для полного описания нажмите «ℹ️ Информация» в главном меню.",
+        kb, context, photo=banner_file_id
+    )
+
+
+async def support_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🆘 Написать в поддержку", url=f"https://t.me/{SUPPORT_USERNAME.lstrip('@')}")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")],
+    ])
+    await update.message.reply_text(
+        f"🆘 *Поддержка Stars Bulling*\n\n"
+        f"По всем вопросам пишите:\n👉 {SUPPORT_USERNAME}\n\n"
+        f"Мы отвечаем в течение 2 часов.",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+
 def main():
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(setup_commands).build()
 
     buy_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(buy_stars_start, pattern="^buy_stars$")],
         states={
             WAIT_STARS_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, buy_stars_count)],
+            WAIT_BUY_TYPE: [CallbackQueryHandler(buy_type_selected, pattern="^buy_type_(self|anon)$")],
             WAIT_TARGET_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, buy_stars_username)],
             WAIT_CURRENCY: [CallbackQueryHandler(buy_stars_currency, pattern="^currency_(rub|usd|ton)$")],
         },
@@ -1135,6 +1351,13 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CommandHandler("buy", lambda u, c: buy_cmd(u, c)))
+    app.add_handler(CommandHandler("balance", balance_cmd))
+    app.add_handler(CommandHandler("referral", referral_cmd))
+    app.add_handler(CommandHandler("deposit", deposit_cmd))
+    app.add_handler(CommandHandler("withdraw", withdraw_cmd))
+    app.add_handler(CommandHandler("info", info_cmd))
+    app.add_handler(CommandHandler("support", support_cmd))
 
     app.add_handler(buy_conv)
     app.add_handler(deposit_conv)
@@ -1146,6 +1369,7 @@ def main():
     app.add_handler(msg_user_conv)
 
     app.add_handler(CallbackQueryHandler(show_main_menu, pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(buy_type_selected, pattern="^buy_type_(self|anon)$"))
     app.add_handler(CallbackQueryHandler(paid_stars, pattern="^paid_stars$"))
     app.add_handler(CallbackQueryHandler(admin_confirm_payment, pattern="^(confirm|decline)_payment_"))
     app.add_handler(CallbackQueryHandler(deposit_menu, pattern="^deposit$"))
