@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = "8676951864:AAFre_ZY7CI85TKvfoI3yxqRWowoj5daO0s"
-ADMIN_ID = 1208378923  # ← ЗАМЕНИТЕ НА ВАШ TELEGRAM ID
+ADMIN_ID = 174415647
 
 SUPPORT_USERNAME = "@Scronexcyyy"
 
